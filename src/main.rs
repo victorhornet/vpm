@@ -102,7 +102,7 @@ fn main() {
                 .arg(project.get_path())
                 .output()
                 .unwrap();
-            println!("Created project: {}", &project);
+            println!("Created project {} with id {}", &project, id);
         }
         Some(Commands::Rename { id, name }) => {
             let project = projects.get(&id).unwrap();
