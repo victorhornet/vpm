@@ -1,3 +1,3 @@
 # VPM
 
-Vector's Project Manager is a small CLI tools for querying and creating my project directories.
+Small CLI tool to manage my projects folder.
