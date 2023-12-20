@@ -10,6 +10,9 @@ use chrono::NaiveDate;
 
 use clap::Parser;
 use clap::Subcommand;
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
+use itertools::Itertools;
 
 mod tui;
 
@@ -44,7 +47,16 @@ struct Args {
 #[derive(Subcommand, Debug)]
 enum Commands {
     #[command(about = "List all projects")]
-    List,
+    List {
+        #[arg(short, long, help = "Print the id of the projects")]
+        id: bool,
+        #[arg(short, long, help = "Print the path of the projects")]
+        path: bool,
+        #[arg(short, long, help = "Print the date of the projects")]
+        date: bool,
+        #[arg(short, long, help = "Print the full name of the project directories")]
+        full_name: bool,
+    },
     #[command(about = "Create a new project")]
     New {
         #[clap(help = "Name of the project")]
@@ -88,9 +100,29 @@ fn main() {
 
     let args = Args::parse();
     match args.command {
-        Some(Commands::List) => {
-            projects.iter().for_each(|(id, project)| {
-                println!("{id:3}: {project}");
+        Some(Commands::List {
+            id,
+            path,
+            date,
+            full_name,
+        }) => {
+            projects.iter().for_each(|(project_id, project)| {
+                if path {
+                    println!("{}", project.get_path());
+                } else {
+                    if id {
+                        print!("{project_id:3} ");
+                    }
+                    if date {
+                        print!("{date} ", date = project.date);
+                    }
+                    if full_name {
+                        print!("{project} ");
+                    } else {
+                        print!("{project} ", project = project.name);
+                    }
+                    println!();
+                }
             });
         }
         Some(Commands::New { name }) => {
@@ -135,10 +167,15 @@ fn main() {
                 .unwrap();
         }
         Some(Commands::Search { pattern }) => {
+            let matcher = SkimMatcherV2::default();
             projects
                 .iter()
-                .filter(|(_, project)| project.to_string().contains(&pattern))
-                .for_each(|(id, project)| {
+                .filter_map(|(id, project)| {
+                    let score = matcher.fuzzy_match(&project.to_string(), &pattern);
+                    score.map(|score| (id, project, score))
+                })
+                .sorted_by(|(_, _, score1), (_, _, score2)| score2.cmp(score1))
+                .for_each(|(id, project, _)| {
                     println!("{id:02}: {project}");
                 });
         }

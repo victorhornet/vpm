@@ -1,6 +1,6 @@
 [package]
 name = "vector-project-manager"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Victor Hornet"]
 license = "MIT"
 edition = "2021"
@@ -13,6 +13,8 @@ anyhow = "1.0.75"
 chrono = "0.4.26"
 clap = { version = "4.1.8", features = ["derive"] }
 crossterm = "0.27.0"
+fuzzy-matcher = "0.3.7"
+itertools = "0.12.0"
 ratatui = { version = "0.24.0", features = ["all-widgets"] }
 
 [[bin]]
