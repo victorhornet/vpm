@@ -10,7 +10,7 @@ use std::{
     fs,
     process::{Command, Stdio},
 };
-mod fish;
+mod shells;
 mod tui;
 
 #[derive(Debug, Clone)]
@@ -126,7 +126,7 @@ enum Commands {
         )]
         limit: usize,
     },
-    #[command(about = "Init shell bindings")]
+    #[command(about = "Init shell bindings. This will create two functions: j and pj.")]
     Init {
         #[command(subcommand)]
         shell: InitShells,
@@ -136,8 +136,10 @@ enum Commands {
 #[derive(Debug, Clone, Subcommand, Default)]
 enum InitShells {
     #[default]
-    #[command(about = "Init fish shell. This will create two functions: j and pj.")]
+    #[command(about = "Init fish shell")]
     Fish,
+    #[command(about = "Init zsh shell")]
+    Zsh,
 }
 
 fn main() -> Result<()> {
@@ -277,7 +279,8 @@ fn read_files(path: impl Into<String>, args: &Args) -> BTreeMap<usize, Project> 
 
 fn init_shell(shell: InitShells) -> Result<()> {
     match shell {
-        InitShells::Fish => fish::init(),
+        InitShells::Fish => shells::init_fish(),
+        InitShells::Zsh => shells::init_zsh(),
         #[allow(unreachable_patterns)]
         sh => unimplemented!("init_shell({sh:?})"),
     }
