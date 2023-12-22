@@ -18,7 +18,7 @@ vpm [COMMAND]
 
 For a list of commands, run `vpm --help`.
 
-## Shells integrations
+## Shell integrations
 
 Example shortcuts using `vpm`.
 
