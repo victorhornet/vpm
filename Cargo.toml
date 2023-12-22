@@ -1,6 +1,6 @@
 [package]
 name = "vector-project-manager"
-version = "0.1.2"
+version = "0.1.3"
 authors = ["Victor Hornet"]
 license = "MIT"
 edition = "2021"
@@ -9,13 +9,14 @@ description = "Tool to manage my project folder."
 readme = "README.md"
 
 [dependencies]
-anyhow = "1.0.75"
+
 chrono = "0.4.26"
 clap = { version = "4.1.8", features = ["derive"] }
+color-eyre = "0.6.2"
 crossterm = "0.27.0"
 fuzzy-matcher = "0.3.7"
 itertools = "0.12.0"
-ratatui = { version = "0.24.0", features = ["all-widgets"] }
+ratatui = { version = "0.25.0", features = ["all-widgets"] }
 
 [[bin]]
 name = "vpm"

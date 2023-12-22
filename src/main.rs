@@ -1,19 +1,16 @@
-use std::collections::BTreeMap;
-use std::env;
-use std::fmt::Display;
-use std::fs;
-use std::process::Command;
-use std::process::Stdio;
-
-use chrono::Local;
-use chrono::NaiveDate;
-
-use clap::Parser;
-use clap::Subcommand;
-use fuzzy_matcher::skim::SkimMatcherV2;
-use fuzzy_matcher::FuzzyMatcher;
+use chrono::{Local, NaiveDate};
+use clap::{Parser, Subcommand};
+use color_eyre::eyre::{anyhow, Result};
+use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use itertools::Itertools;
-
+use std::{
+    collections::BTreeMap,
+    env,
+    fmt::Display,
+    fs,
+    process::{Command, Stdio},
+};
+mod fish;
 mod tui;
 
 #[derive(Debug, Clone)]
@@ -21,42 +18,80 @@ pub struct Project {
     pub id: usize,
     pub name: String,
     pub date: NaiveDate,
+    args: Option<Args>,
 }
 
 impl Project {
+    pub fn new(id: usize, name: impl Into<String>, date: NaiveDate) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            date,
+            args: None,
+        }
+    }
     pub fn get_path(&self) -> String {
-        format!("{}/{}", env::var("PROJECT_HOME").unwrap(), self)
+        format!("{}/{}", env::var("PROJECT_HOME").unwrap(), self.full_name())
+    }
+    pub fn with_args(mut self, args: &Args) -> Self {
+        self.args = Some(args.to_owned());
+        self
+    }
+    pub fn full_name(&self) -> String {
+        format!(
+            "p{:02X}-{}-{}",
+            self.id,
+            self.name,
+            self.date.format("%Y-%m-%d")
+        )
     }
 }
 
 impl Display for Project {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let date = self.date.format("%Y-%m-%d").to_string();
-        write!(f, "p{:02X}-{}-{}", self.id, self.name, date)
+        match &self.args {
+            Some(args) => {
+                if args.path {
+                    return write!(f, "{}", self.get_path());
+                }
+                if args.id {
+                    write!(f, "{:02} ", self.id)?;
+                }
+                if args.date {
+                    write!(f, "{} ", self.date)?;
+                }
+                if args.full_name {
+                    write!(f, "{} ", self.full_name())?;
+                } else {
+                    write!(f, "{} ", self.name)?;
+                }
+                Ok(())
+            }
+            None => write!(f, "{}", self.full_name()),
+        }
     }
 }
 
 /// Simple program to manage projects
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+pub struct Args {
+    #[arg(short, long, help = "Print the id of the projects")]
+    id: bool,
+    #[arg(short, long, help = "Print the path of the projects")]
+    path: bool,
+    #[arg(short, long, help = "Print the date of the projects")]
+    date: bool,
+    #[arg(short, long, help = "Print the full name of the project directories")]
+    full_name: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 enum Commands {
     #[command(about = "List all projects")]
-    List {
-        #[arg(short, long, help = "Print the id of the projects")]
-        id: bool,
-        #[arg(short, long, help = "Print the path of the projects")]
-        path: bool,
-        #[arg(short, long, help = "Print the date of the projects")]
-        date: bool,
-        #[arg(short, long, help = "Print the full name of the project directories")]
-        full_name: bool,
-    },
+    List,
     #[command(about = "Create a new project")]
     New {
         #[clap(help = "Name of the project")]
@@ -83,53 +118,52 @@ enum Commands {
     Search {
         #[clap(help = "Pattern to search for")]
         pattern: String,
+        #[arg(
+            short,
+            long,
+            default_value = "0",
+            help = "Limit the number of results, 0 for no limit"
+        )]
+        limit: usize,
+    },
+    #[command(about = "Init shell bindings")]
+    Init {
+        #[command(subcommand)]
+        shell: InitShells,
     },
 }
 
-fn main() {
+#[derive(Debug, Clone, Subcommand, Default)]
+enum InitShells {
+    #[default]
+    #[command(about = "Init fish shell. This will create two functions: j and pj.")]
+    Fish,
+}
+
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    let args = Args::parse();
     let path_str = match env::var("PROJECT_HOME") {
         Ok(path) => path,
         Err(_) => {
-            println!(
+            return Err(anyhow!(
                 "You must set the $PROJECT_HOME variable to the root of your projects folder!"
-            );
-            return;
+            ));
         }
     };
-    let projects = read_files(path_str);
 
-    let args = Args::parse();
+    let projects = read_files(path_str, &args);
     match args.command {
-        Some(Commands::List {
-            id,
-            path,
-            date,
-            full_name,
-        }) => {
-            projects.iter().for_each(|(project_id, project)| {
-                if path {
-                    println!("{}", project.get_path());
-                } else {
-                    if id {
-                        print!("{project_id:3} ");
-                    }
-                    if date {
-                        print!("{date} ", date = project.date);
-                    }
-                    if full_name {
-                        print!("{project} ");
-                    } else {
-                        print!("{project} ", project = project.name);
-                    }
-                    println!();
-                }
+        Some(Commands::List) => {
+            projects.values().for_each(|project| {
+                println!("{}", project);
             });
         }
         Some(Commands::New { name }) => {
             let id = projects.last_key_value().unwrap().0 + 1;
             let date = Local::now().date_naive();
             let name = format_name(&name).unwrap();
-            let project = Project { id, name, date };
+            let project = Project::new(id, name, date);
             Command::new("mkdir")
                 .arg(project.get_path())
                 .output()
@@ -139,11 +173,7 @@ fn main() {
         Some(Commands::Rename { id, name }) => {
             let project = projects.get(&id).unwrap();
             let new_name = format_name(&name).unwrap();
-            let new_project = Project {
-                id,
-                name: new_name,
-                date: project.date,
-            };
+            let new_project = Project::new(id, new_name, project.date);
             Command::new("mv")
                 .arg(project.get_path())
                 .arg(new_project.get_path())
@@ -152,11 +182,15 @@ fn main() {
             println!("Renamed project: {}", &new_project);
         }
         Some(Commands::Path { id }) => {
-            let project = projects.get(&id).unwrap();
+            let project = projects
+                .get(&id)
+                .ok_or(anyhow!("Project {id} not found!"))?;
             println!("{}", project.get_path());
         }
         Some(Commands::Code { id }) => {
-            let project = projects.get(&id).unwrap();
+            let project = projects
+                .get(&id)
+                .ok_or(anyhow!("Project {id} not found!"))?;
             let path = project.get_path();
             Command::new("code")
                 .arg(path)
@@ -166,20 +200,21 @@ fn main() {
                 .spawn()
                 .unwrap();
         }
-        Some(Commands::Search { pattern }) => {
+        Some(Commands::Search { pattern, limit }) => {
             let matcher = SkimMatcherV2::default();
             projects
-                .iter()
-                .filter_map(|(id, project)| {
+                .values()
+                .filter_map(|project| {
                     let score = matcher.fuzzy_match(&project.to_string(), &pattern);
-                    score.map(|score| (id, project, score))
+                    score.map(|score| (project, score))
                 })
-                .sorted_by(|(_, _, score1), (_, _, score2)| score2.cmp(score1))
-                .for_each(|(id, project, _)| {
-                    println!("{id:02}: {project}");
+                .sorted_by(|(_, score1), (_, score2)| score2.cmp(score1))
+                .take(if limit > 0 { limit } else { usize::MAX })
+                .for_each(|(project, _)| {
+                    println!("{project}");
                 });
         }
-
+        Some(Commands::Init { shell }) => init_shell(shell)?,
         #[allow(unreachable_patterns)]
         Some(c) => {
             unimplemented!("{:?}", c);
@@ -188,6 +223,7 @@ fn main() {
             tui::start(projects).unwrap();
         }
     }
+    Ok(())
 }
 
 fn format_name(name: &str) -> Result<String, String> {
@@ -203,7 +239,7 @@ fn format_name(name: &str) -> Result<String, String> {
         .join("-"))
 }
 
-fn read_files(path: impl Into<String>) -> BTreeMap<usize, Project> {
+fn read_files(path: impl Into<String>, args: &Args) -> BTreeMap<usize, Project> {
     fs::read_dir(path.into())
         .unwrap()
         .filter(|project| {
@@ -234,7 +270,15 @@ fn read_files(path: impl Into<String>) -> BTreeMap<usize, Project> {
                 "%Y-%m-%d",
             )
             .expect("Could not parse date");
-            (id, Project { id, name, date })
+            (id, Project::new(id, name, date).with_args(args))
         })
         .collect()
+}
+
+fn init_shell(shell: InitShells) -> Result<()> {
+    match shell {
+        InitShells::Fish => fish::init(),
+        #[allow(unreachable_patterns)]
+        sh => unimplemented!("init_shell({sh:?})"),
+    }
 }
