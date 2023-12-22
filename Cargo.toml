@@ -5,7 +5,7 @@ authors = ["Victor Hornet"]
 license = "MIT"
 edition = "2021"
 repository = "https://github.com/victorhornet/vpm"
-description = "Tool to manage my project folder."
+description = "Project folder manager."
 readme = "README.md"
 
 [dependencies]
