@@ -1,5 +1,5 @@
-use chrono::{Local, NaiveDate};
-use clap::{Parser, Subcommand};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime};
+use clap::{Parser, Subcommand, ValueEnum};
 use color_eyre::eyre::{anyhow, Result};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use itertools::Itertools;
@@ -18,15 +18,22 @@ pub struct Project {
     pub id: usize,
     pub name: String,
     pub date: NaiveDate,
+    pub last_accessed: DateTime<Local>,
     args: Option<Args>,
 }
 
 impl Project {
-    pub fn new(id: usize, name: impl Into<String>, date: NaiveDate) -> Self {
+    pub fn new(
+        id: usize,
+        name: impl Into<String>,
+        date: NaiveDate,
+        last_accessed: DateTime<Local>,
+    ) -> Self {
         Self {
             id,
             name: name.into(),
             date,
+            last_accessed,
             args: None,
         }
     }
@@ -60,9 +67,12 @@ impl Display for Project {
                 if args.date {
                     write!(f, "{} ", self.date)?;
                 }
+                if args.accessed {
+                    write!(f, "({}) ", self.last_accessed)?;
+                }
                 if args.full_name {
                     write!(f, "{} ", self.full_name())?;
-                } else {
+                } else if !args.no_name {
                     write!(f, "{} ", self.name)?;
                 }
                 Ok(())
@@ -82,8 +92,12 @@ pub struct Args {
     path: bool,
     #[arg(short, long, help = "Print the date of the projects")]
     date: bool,
-    #[arg(short, long, help = "Print the full name of the project directories")]
+    #[arg(short, long, help = "Print the full name of the projects")]
     full_name: bool,
+    #[arg(short, long, help = "Don't print the name of the projects")]
+    no_name: bool,
+    #[arg(short, long, help = "Print the time the projects were last accessed")]
+    accessed: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -91,7 +105,19 @@ pub struct Args {
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
     #[command(about = "List all projects")]
-    List,
+    List {
+        #[arg(short, long, help = "Sort", default_value = "id")]
+        sort: Sort,
+        #[arg(short, long, help = "Reverse the sort")]
+        reverse: bool,
+        #[arg(
+            short,
+            long,
+            default_value = "0",
+            help = "Limit the number of results, 0 for no limit"
+        )]
+        limit: usize,
+    },
     #[command(about = "Create a new project")]
     New {
         #[clap(help = "Name of the project")]
@@ -133,6 +159,16 @@ enum Commands {
     },
 }
 
+#[derive(Debug, Clone, Default, ValueEnum)]
+enum Sort {
+    #[default]
+    Id,
+    Name,
+    #[clap(alias = "date")]
+    Created,
+    Accessed,
+}
+
 #[derive(Debug, Clone, Subcommand, Default)]
 enum InitShells {
     #[default]
@@ -156,26 +192,46 @@ fn main() -> Result<()> {
 
     let projects = read_files(path_str, &args);
     match args.command {
-        Some(Commands::List) => {
-            projects.values().for_each(|project| {
-                println!("{}", project);
-            });
+        Some(Commands::List {
+            sort,
+            reverse,
+            limit,
+        }) => {
+            projects
+                .values()
+                .sorted_by(|a, b| {
+                    let ordering = match sort {
+                        Sort::Id => a.id.cmp(&b.id),
+                        Sort::Name => a.name.cmp(&b.name),
+                        Sort::Created => a.date.cmp(&b.date),
+                        Sort::Accessed => a.last_accessed.cmp(&b.last_accessed),
+                    };
+                    if reverse {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
+                })
+                .take(if limit > 0 { limit } else { usize::MAX })
+                .for_each(|project| {
+                    println!("{}", project);
+                });
         }
-        Some(Commands::New { name }) => {
+        Some(Commands::New { ref name }) => {
             let id = projects.last_key_value().unwrap().0 + 1;
             let date = Local::now().date_naive();
-            let name = format_name(&name).unwrap();
-            let project = Project::new(id, name, date);
+            let name = format_name(name).unwrap();
+            let project = Project::new(id, name, date, Local::now()).with_args(&args);
             Command::new("mkdir")
                 .arg(project.get_path())
                 .output()
                 .unwrap();
-            println!("Created project {} with id {}", &project, id);
+            println!("{}", &project);
         }
         Some(Commands::Rename { id, name }) => {
             let project = projects.get(&id).unwrap();
             let new_name = format_name(&name).unwrap();
-            let new_project = Project::new(id, new_name, project.date);
+            let new_project = Project::new(id, new_name, project.date, Local::now());
             Command::new("mv")
                 .arg(project.get_path())
                 .arg(new_project.get_path())
@@ -254,8 +310,8 @@ fn read_files(path: impl Into<String>, args: &Args) -> BTreeMap<usize, Project> 
                 .starts_with('p')
         })
         .map(|project| {
+            let project = project.unwrap();
             let project_vec: Vec<String> = project
-                .unwrap()
                 .file_name()
                 .to_str()
                 .unwrap()
@@ -272,7 +328,17 @@ fn read_files(path: impl Into<String>, args: &Args) -> BTreeMap<usize, Project> 
                 "%Y-%m-%d",
             )
             .expect("Could not parse date");
-            (id, Project::new(id, name, date).with_args(args))
+            let modified: DateTime<Local> = project
+                .metadata()
+                .unwrap()
+                .accessed()
+                .map(|time| time.into())
+                .unwrap_or(
+                    date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+                        .and_local_timezone(Local)
+                        .unwrap(),
+                );
+            (id, Project::new(id, name, date, modified).with_args(args))
         })
         .collect()
 }

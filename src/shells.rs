@@ -3,8 +3,8 @@ use std::fs::File;
 use std::io::ErrorKind;
 use std::{env, io::Write, path::PathBuf};
 
-const FISH_FILENAME: &str = ".config/fish/functions/vpm.fish";
-const FISH_FUNCTIONS: &str = r#"
+const FISH_PJ_FILENAME: &str = ".config/fish/functions/pj.fish";
+const FISH_PJ_FUNCTION: &str = r#"
 # cd into a project by its ID.
 # Usage: pj <ID>
 # Example: pj 1
@@ -13,7 +13,9 @@ function pj
     if set -q path[1]
         cd $path
     end
-end       
+end"#;
+const FISH_J_FILENAME: &str = ".config/fish/functions/j.fish";
+const FISH_J_FUNCTION: &str = r#"
 # Fuzzy search for a project and cd into it.
 # Usage: j <QUERY>
 # Example: j some-proj
@@ -27,7 +29,8 @@ function j
 end
 "#;
 pub fn init_fish() -> Result<()> {
-    bind_functions(FISH_FILENAME, FISH_FUNCTIONS)?;
+    bind_functions(FISH_J_FILENAME, FISH_J_FUNCTION)?;
+    bind_functions(FISH_PJ_FILENAME, FISH_PJ_FUNCTION)?;
     Ok(())
 }
 
