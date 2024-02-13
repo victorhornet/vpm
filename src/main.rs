@@ -8,6 +8,7 @@ use std::{
     env,
     fmt::Display,
     fs,
+    path::Path,
     process::{Command, Stdio},
 };
 mod shells;
@@ -122,6 +123,8 @@ enum Commands {
     New {
         #[clap(help = "Name of the project")]
         name: String,
+        #[arg(short, long, help = "Template to use")]
+        template: Option<String>,
     },
     #[command(about = "Open a project in VSCode")]
     Code {
@@ -157,6 +160,31 @@ enum Commands {
         #[command(subcommand)]
         shell: InitShells,
     },
+    #[command(about = "Create a new template from a project")]
+    Template {
+        #[clap(help = "ID of the project")]
+        id: usize,
+        #[clap(help = "Name of the template")]
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum TemplateCommands {
+    #[command(about = "List all templates")]
+    List,
+    #[command(about = "Create a new template")]
+    New {
+        #[clap(help = "Name of the template")]
+        name: String,
+        #[clap(help = "ID of the project")]
+        id: usize,
+    },
+    #[command(about = "Delete a template")]
+    Delete {
+        #[clap(help = "Name of the template")]
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, ValueEnum)]
@@ -190,7 +218,7 @@ fn main() -> Result<()> {
         }
     };
 
-    let projects = read_files(path_str, &args);
+    let projects = read_files(&path_str, &args);
     match args.command {
         Some(Commands::List {
             sort,
@@ -217,15 +245,34 @@ fn main() -> Result<()> {
                     println!("{}", project);
                 });
         }
-        Some(Commands::New { ref name }) => {
+        Some(Commands::New {
+            ref name,
+            ref template,
+        }) => {
             let id = projects.last_key_value().unwrap().0 + 1;
             let date = Local::now().date_naive();
             let name = format_name(name).unwrap();
             let project = Project::new(id, name, date, Local::now()).with_args(&args);
-            Command::new("mkdir")
-                .arg(project.get_path())
-                .output()
-                .unwrap();
+            match template {
+                Some(template) => {
+                    let template_path = Path::new(&path_str).join("templates").join(&template);
+                    if !template_path.exists() {
+                        return Err(anyhow!("Template does not exist!"));
+                    }
+                    Command::new("cp")
+                        .arg("-r")
+                        .arg(template_path)
+                        .arg(project.get_path())
+                        .output()
+                        .unwrap();
+                }
+                None => {
+                    Command::new("mkdir")
+                        .arg(project.get_path())
+                        .output()
+                        .unwrap();
+                }
+            }
             println!("{}", &project);
         }
         Some(Commands::Rename { id, name }) => {
@@ -273,6 +320,21 @@ fn main() -> Result<()> {
                 });
         }
         Some(Commands::Init { shell }) => init_shell(shell)?,
+        Some(Commands::Template { name, id }) => {
+            let project = projects.get(&id).unwrap();
+            let project_path = project.get_path();
+            let templates_root = Path::new(&path_str).join("templates");
+            if !templates_root.exists() {
+                Command::new("mkdir").arg(&templates_root).output().unwrap();
+            }
+            let template_path = templates_root.join(&name);
+            Command::new("cp")
+                .arg("-r")
+                .arg(project_path)
+                .arg(template_path)
+                .output()
+                .unwrap();
+        }
         #[allow(unreachable_patterns)]
         Some(c) => {
             unimplemented!("{:?}", c);
