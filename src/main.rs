@@ -10,9 +10,40 @@ use std::{
     fs,
     path::Path,
     process::{Command, Stdio},
+    str::FromStr,
 };
 mod shells;
 mod tui;
+
+#[derive(Default, Clone, Debug, Copy)]
+pub enum Status {
+    #[default]
+    Active,
+    Paused,
+    Archived,
+}
+
+impl FromStr for Status {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "active" => Ok(Status::Active),
+            "paused" => Ok(Status::Paused),
+            "archived" => Ok(Status::Archived),
+            _ => Err(anyhow!("Invalid status")),
+        }
+    }
+}
+
+impl Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::Active => write!(f, "Active"),
+            Status::Paused => write!(f, "Paused"),
+            Status::Archived => write!(f, "Archived"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -20,6 +51,7 @@ pub struct Project {
     pub name: String,
     pub date: NaiveDate,
     pub last_accessed: DateTime<Local>,
+    pub status: Status,
     args: Option<Args>,
 }
 
@@ -35,14 +67,24 @@ impl Project {
             name: name.into(),
             date,
             last_accessed,
+            status: Status::default(),
             args: None,
         }
     }
     pub fn get_path(&self) -> String {
-        format!("{}/{}", env::var("PROJECT_HOME").unwrap(), self.full_name())
+        format!(
+            "{}/{}/{}",
+            env::var("PROJECT_HOME").unwrap(),
+            self.status,
+            self.full_name()
+        )
     }
     pub fn with_args(mut self, args: &Args) -> Self {
         self.args = Some(args.to_owned());
+        self
+    }
+    pub fn with_status(mut self, status: Status) -> Self {
+        self.status = status;
         self
     }
     pub fn full_name(&self) -> String {
@@ -362,46 +404,68 @@ fn format_name(name: &str) -> Result<String, String> {
 fn read_files(path: impl Into<String>, args: &Args) -> BTreeMap<usize, Project> {
     fs::read_dir(path.into())
         .unwrap()
-        .filter(|project| {
-            project
-                .as_ref()
-                .unwrap()
-                .file_name()
-                .to_str()
-                .unwrap()
-                .starts_with('p')
+        .filter_map(|res| res.ok())
+        .filter(|entry| {
+            entry.file_type().is_ok_and(|ftype| ftype.is_dir())
+                && entry
+                    .file_name()
+                    .into_string()
+                    .is_ok_and(|name| Status::from_str(name.as_str()).is_ok())
         })
-        .map(|project| {
-            let project = project.unwrap();
-            let project_vec: Vec<String> = project
-                .file_name()
-                .to_str()
+        .map(|dir| {
+            let status = Status::from_str(dir.file_name().into_string().unwrap().as_str()).unwrap();
+            let path = dir.path();
+            fs::read_dir(path)
                 .unwrap()
-                .to_string()
-                .split('-')
-                .map(|s| s.to_string())
-                .collect();
-            let id = usize::from_str_radix(&project_vec[0][1..], 16).unwrap();
-            let name = project_vec[1..project_vec.len() - 3].join("-");
-            let date = NaiveDate::parse_from_str(
-                project_vec[project_vec.len() - 3..=project_vec.len() - 1]
-                    .join("-")
-                    .as_str(),
-                "%Y-%m-%d",
-            )
-            .expect("Could not parse date");
-            let modified: DateTime<Local> = project
-                .metadata()
-                .unwrap()
-                .accessed()
-                .map(|time| time.into())
-                .unwrap_or(
-                    date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
-                        .and_local_timezone(Local)
-                        .unwrap(),
-                );
-            (id, Project::new(id, name, date, modified).with_args(args))
+                .filter(|project| {
+                    project
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_str()
+                        .unwrap()
+                        .starts_with('p')
+                })
+                .map(|project| {
+                    let project = project.unwrap();
+                    let project_vec: Vec<String> = project
+                        .file_name()
+                        .to_str()
+                        .unwrap()
+                        .to_string()
+                        .split('-')
+                        .map(|s| s.to_string())
+                        .collect();
+                    let id = usize::from_str_radix(&project_vec[0][1..], 16).unwrap();
+                    let name = project_vec[1..project_vec.len() - 3].join("-");
+                    let date = NaiveDate::parse_from_str(
+                        project_vec[project_vec.len() - 3..=project_vec.len() - 1]
+                            .join("-")
+                            .as_str(),
+                        "%Y-%m-%d",
+                    )
+                    .expect("Could not parse date");
+                    let modified: DateTime<Local> = project
+                        .metadata()
+                        .unwrap()
+                        .accessed()
+                        .map(|time| time.into())
+                        .unwrap_or(
+                            date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+                                .and_local_timezone(Local)
+                                .unwrap(),
+                        );
+                    (
+                        id,
+                        Project::new(id, name, date, modified)
+                            .with_args(args)
+                            .with_status(status),
+                    )
+                })
+                .collect_vec()
         })
+        .concat()
+        .into_iter()
         .collect()
 }
 
