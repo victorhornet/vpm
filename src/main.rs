@@ -23,6 +23,17 @@ pub enum Status {
     Archived,
 }
 
+impl TryFrom<String> for Status {
+    type Error = color_eyre::eyre::Error;
+    fn try_from(s: String) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "active" => Ok(Status::Active),
+            "paused" => Ok(Status::Paused),
+            "archived" => Ok(Status::Archived),
+            _ => Err(anyhow!("Invalid status")),
+        }
+    }
+}
 impl FromStr for Status {
     type Err = color_eyre::eyre::Error;
     fn from_str(s: &str) -> Result<Self> {
@@ -291,7 +302,10 @@ fn main() -> Result<()> {
             ref name,
             ref template,
         }) => {
-            let id = projects.last_key_value().unwrap().0 + 1;
+            let id = projects
+                .last_key_value()
+                .map(|kv| kv.0 + 1)
+                .unwrap_or_default();
             let date = Local::now().date_naive();
             let name = format_name(name).unwrap();
             let project = Project::new(id, name, date, Local::now()).with_args(&args);
@@ -402,67 +416,68 @@ fn format_name(name: &str) -> Result<String, String> {
 }
 
 fn read_files(path: impl Into<String>, args: &Args) -> BTreeMap<usize, Project> {
-    fs::read_dir(path.into())
-        .unwrap()
-        .filter_map(|res| res.ok())
-        .filter(|entry| {
-            entry.file_type().is_ok_and(|ftype| ftype.is_dir())
-                && entry
-                    .file_name()
-                    .into_string()
-                    .is_ok_and(|name| Status::from_str(name.as_str()).is_ok())
-        })
-        .map(|dir| {
-            let status = Status::from_str(dir.file_name().into_string().unwrap().as_str()).unwrap();
-            let path = dir.path();
-            fs::read_dir(path)
-                .unwrap()
-                .filter(|project| {
-                    project
-                        .as_ref()
-                        .unwrap()
-                        .file_name()
-                        .to_str()
-                        .unwrap()
-                        .starts_with('p')
+    let path_name = path.into();
+    fs::read_dir(&path_name)
+        .expect(format!("failed to read directory: {}", &path_name).as_str())
+        .filter_map(|res| {
+            res.ok()
+                .and_then(|dir| dir.file_name().into_string().ok().map(|s| (dir.path(), s)))
+                .and_then(|(path, status_dir)| {
+                    Status::try_from(status_dir)
+                        .ok()
+                        .map(|status| (path, status))
                 })
-                .map(|project| {
-                    let project = project.unwrap();
-                    let project_vec: Vec<String> = project
-                        .file_name()
-                        .to_str()
+                .map(|(path, status)| {
+                    fs::read_dir(path)
                         .unwrap()
-                        .to_string()
-                        .split('-')
-                        .map(|s| s.to_string())
-                        .collect();
-                    let id = usize::from_str_radix(&project_vec[0][1..], 16).unwrap();
-                    let name = project_vec[1..project_vec.len() - 3].join("-");
-                    let date = NaiveDate::parse_from_str(
-                        project_vec[project_vec.len() - 3..=project_vec.len() - 1]
-                            .join("-")
-                            .as_str(),
-                        "%Y-%m-%d",
-                    )
-                    .expect("Could not parse date");
-                    let modified: DateTime<Local> = project
-                        .metadata()
-                        .unwrap()
-                        .accessed()
-                        .map(|time| time.into())
-                        .unwrap_or(
-                            date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
-                                .and_local_timezone(Local)
-                                .unwrap(),
-                        );
-                    (
-                        id,
-                        Project::new(id, name, date, modified)
-                            .with_args(args)
-                            .with_status(status),
-                    )
+                        .filter_map(|project| {
+                            if !project
+                                .as_ref()
+                                .unwrap()
+                                .file_name()
+                                .to_str()
+                                .unwrap()
+                                .starts_with('p')
+                            {
+                                return None;
+                            }
+                            let project = project.unwrap();
+                            let project_vec: Vec<String> = project
+                                .file_name()
+                                .to_str()
+                                .unwrap()
+                                .to_string()
+                                .split('-')
+                                .map(|s| s.to_string())
+                                .collect();
+                            let id = usize::from_str_radix(&project_vec[0][1..], 16).unwrap();
+                            let name = project_vec[1..project_vec.len() - 3].join("-");
+                            let date = NaiveDate::parse_from_str(
+                                project_vec[project_vec.len() - 3..=project_vec.len() - 1]
+                                    .join("-")
+                                    .as_str(),
+                                "%Y-%m-%d",
+                            )
+                            .expect("Could not parse date");
+                            let modified: DateTime<Local> = project
+                                .metadata()
+                                .unwrap()
+                                .accessed()
+                                .map(|time| time.into())
+                                .unwrap_or(
+                                    date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+                                        .and_local_timezone(Local)
+                                        .unwrap(),
+                                );
+                            Some((
+                                id,
+                                Project::new(id, name, date, modified)
+                                    .with_args(args)
+                                    .with_status(status),
+                            ))
+                        })
+                        .collect_vec()
                 })
-                .collect_vec()
         })
         .concat()
         .into_iter()
