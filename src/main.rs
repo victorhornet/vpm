@@ -4,6 +4,7 @@ use color_eyre::eyre::{anyhow, Result};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use itertools::Itertools;
 use std::{
+    cmp::Ordering,
     collections::BTreeMap,
     env,
     fmt::Display,
@@ -15,12 +16,12 @@ use std::{
 mod shells;
 mod tui;
 
-#[derive(Default, Clone, Debug, Copy)]
+#[derive(Default, Clone, Debug, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
+    Archived,
+    Paused,
     #[default]
     Active,
-    Paused,
-    Archived,
 }
 
 impl TryFrom<String> for Status {
@@ -116,19 +117,21 @@ impl Display for Project {
                     return write!(f, "{}", self.get_path());
                 }
                 if args.id {
-                    write!(f, "{:02} ", self.id)?;
+                    write!(f, "{:3}\t", self.id)?;
                 }
                 if args.date {
-                    write!(f, "{} ", self.date)?;
+                    write!(f, "{}\t", self.date)?;
                 }
                 if args.accessed {
-                    write!(f, "({}) ", self.last_accessed)?;
+                    write!(f, "({})\t", self.last_accessed)?;
                 }
+                write!(f, "({:^8}) ", self.status)?;
                 if args.full_name {
-                    write!(f, "{} ", self.full_name())?;
+                    write!(f, "{}\t", self.full_name())?;
                 } else if !args.no_name {
-                    write!(f, "{} ", self.name)?;
+                    write!(f, "{}\t", self.name)?;
                 }
+
                 Ok(())
             }
             None => write!(f, "{}", self.full_name()),
@@ -160,8 +163,13 @@ pub struct Args {
 enum Commands {
     #[command(about = "List all projects")]
     List {
-        #[arg(short, long, help = "Sort", default_value = "id")]
-        sort: Sort,
+        #[arg(
+            short,
+            long,
+            help = "What to sort by, can be multiple columns in order.",
+            default_value = "id"
+        )]
+        sort: Vec<Sort>,
         #[arg(short, long, help = "Reverse the sort")]
         reverse: bool,
         #[arg(
@@ -171,6 +179,11 @@ enum Commands {
             help = "Limit the number of results, 0 for no limit"
         )]
         limit: usize,
+        #[arg(
+            long,
+            help = "Filter by status. Can be `active`, `paused`, or `archived`"
+        )]
+        status: Vec<Status>,
     },
     #[command(about = "Create a new project")]
     New {
@@ -200,6 +213,11 @@ enum Commands {
     Search {
         #[clap(help = "Pattern to search for")]
         pattern: String,
+        #[arg(
+            long,
+            help = "Filter by status. Can be `active`, `paused`, or `archived`"
+        )]
+        status: Vec<Status>,
         #[arg(
             short,
             long,
@@ -248,6 +266,7 @@ enum Sort {
     #[clap(alias = "date")]
     Created,
     Accessed,
+    Status,
 }
 
 #[derive(Debug, Clone, Subcommand, Default)]
@@ -277,16 +296,22 @@ fn main() -> Result<()> {
             sort,
             reverse,
             limit,
+            status,
         }) => {
             projects
                 .values()
+                .filter(|p| status.is_empty() || status.contains(&p.status))
                 .sorted_by(|a, b| {
-                    let ordering = match sort {
-                        Sort::Id => a.id.cmp(&b.id),
-                        Sort::Name => a.name.cmp(&b.name),
-                        Sort::Created => a.date.cmp(&b.date),
-                        Sort::Accessed => a.last_accessed.cmp(&b.last_accessed),
-                    };
+                    let mut ordering = Ordering::Equal;
+                    for sort_order in sort.iter() {
+                        ordering = ordering.then(match sort_order {
+                            Sort::Id => a.id.cmp(&b.id),
+                            Sort::Name => a.name.cmp(&b.name),
+                            Sort::Created => a.date.cmp(&b.date),
+                            Sort::Accessed => a.last_accessed.cmp(&b.last_accessed),
+                            Sort::Status => a.status.cmp(&b.status),
+                        });
+                    }
                     if reverse {
                         ordering.reverse()
                     } else {
@@ -361,11 +386,18 @@ fn main() -> Result<()> {
                 .spawn()
                 .unwrap();
         }
-        Some(Commands::Search { pattern, limit }) => {
+        Some(Commands::Search {
+            pattern,
+            limit,
+            status,
+        }) => {
             let matcher = SkimMatcherV2::default();
             projects
                 .values()
                 .filter_map(|project| {
+                    if !(status.is_empty()) || status.contains(&project.status) {
+                        return None;
+                    }
                     let score = matcher.fuzzy_match(&project.to_string(), &pattern);
                     score.map(|score| (project, score))
                 })
