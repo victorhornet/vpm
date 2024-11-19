@@ -385,12 +385,9 @@ fn main() -> Result<()> {
         Some(Commands::Rename { id, name }) => {
             let project = projects.get(&id).unwrap();
             let new_name = format_name(&name).unwrap();
-            let new_project = Project::new(id, new_name, project.date, Local::now());
-            Command::new("mv")
-                .arg(project.get_path())
-                .arg(new_project.get_path())
-                .output()
-                .unwrap();
+            let new_project =
+                Project::new(id, new_name, project.date, Local::now()).with_status(project.status);
+            fs::rename(project.get_path(), new_project.get_path())?;
             println!("Renamed project: {}", &new_project);
         }
         Some(Commands::Path { id }) => {
@@ -468,10 +465,6 @@ fn main() -> Result<()> {
             project.set_status(Status::Active)?;
             println!("{}", project);
         }
-        // #[allow(unreachable_patterns)]
-        // Some(c) => {
-        //     unimplemented!("{:?}", c);
-        // }
         None => {
             tui::start(projects).unwrap();
         }
