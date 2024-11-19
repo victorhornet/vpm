@@ -210,7 +210,7 @@ enum Commands {
         )]
         limit: usize,
         #[arg(
-            long,
+            long = "st",
             help = "Filter by status. Can be `active`, `paused`, or `archived`"
         )]
         status: Vec<Status>,
@@ -244,7 +244,7 @@ enum Commands {
         #[clap(help = "Pattern to search for")]
         pattern: String,
         #[arg(
-            long,
+            long = "st",
             help = "Filter by status. Can be `active`, `paused`, or `archived`"
         )]
         status: Vec<Status>,
