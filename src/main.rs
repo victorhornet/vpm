@@ -8,7 +8,7 @@ use std::{
     collections::BTreeMap,
     env,
     fmt::Display,
-    fs,
+    fs, io,
     path::Path,
     process::{Command, Stdio},
     str::FromStr,
@@ -107,6 +107,12 @@ impl Project {
             self.date.format("%Y-%m-%d")
         )
     }
+    pub fn set_status(&mut self, status: Status) -> io::Result<()> {
+        let old_path = self.get_path();
+        self.status = status;
+        let new_path = self.get_path();
+        fs::rename(old_path, new_path)
+    }
 }
 
 impl Display for Project {
@@ -125,7 +131,7 @@ impl Display for Project {
                 if args.accessed {
                     write!(f, "({})\t", self.last_accessed)?;
                 }
-                write!(f, "({:^8}) ", self.status)?;
+                write!(f, "({:^8})\t", self.status)?;
                 if args.full_name {
                     write!(f, "{}\t", self.full_name())?;
                 } else if !args.no_name {
@@ -161,6 +167,26 @@ pub struct Args {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
+    #[command(about = "Get the status of a project")]
+    Status {
+        #[clap(help = "Decimal ID of the project")]
+        id: usize,
+    },
+    #[command(about = "Pause a project")]
+    Pause {
+        #[clap(help = "Decimal ID of the project")]
+        id: usize,
+    },
+    #[command(about = "Archive a project")]
+    Archive {
+        #[clap(help = "Decimal ID of the project")]
+        id: usize,
+    },
+    #[command(about = "Resume a project. Set status to active")]
+    Resume {
+        #[clap(help = "Decimal ID of the project")]
+        id: usize,
+    },
     #[command(about = "List all projects")]
     List {
         #[arg(
@@ -290,7 +316,7 @@ fn main() -> Result<()> {
         }
     };
 
-    let projects = read_files(&path_str, &args);
+    let mut projects = read_files(&path_str, &args);
     match args.command {
         Some(Commands::List {
             sort,
@@ -423,10 +449,29 @@ fn main() -> Result<()> {
                 .output()
                 .unwrap();
         }
-        #[allow(unreachable_patterns)]
-        Some(c) => {
-            unimplemented!("{:?}", c);
+        Some(Commands::Status { id }) => {
+            let project = projects.get(&id).unwrap();
+            println!("{}", project.status);
         }
+        Some(Commands::Archive { id }) => {
+            let project = projects.get_mut(&id).unwrap();
+            project.set_status(Status::Archived)?;
+            println!("{}", project);
+        }
+        Some(Commands::Pause { id }) => {
+            let project = projects.get_mut(&id).unwrap();
+            project.set_status(Status::Paused)?;
+            println!("{}", project);
+        }
+        Some(Commands::Resume { id }) => {
+            let project = projects.get_mut(&id).unwrap();
+            project.set_status(Status::Active)?;
+            println!("{}", project);
+        }
+        // #[allow(unreachable_patterns)]
+        // Some(c) => {
+        //     unimplemented!("{:?}", c);
+        // }
         None => {
             tui::start(projects).unwrap();
         }
