@@ -131,7 +131,9 @@ impl Display for Project {
                 if args.accessed {
                     write!(f, "({})\t", self.last_accessed)?;
                 }
-                write!(f, "({:^8})\t", self.status)?;
+                if args.status {
+                    write!(f, "({:^8})\t", self.status)?;
+                }
                 if args.full_name {
                     write!(f, "{}\t", self.full_name())?;
                 } else if !args.no_name {
@@ -161,6 +163,8 @@ pub struct Args {
     no_name: bool,
     #[arg(short, long, help = "Print the time the projects were last accessed")]
     accessed: bool,
+    #[arg(short, long, help = "Print the status of the projects")]
+    status: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
