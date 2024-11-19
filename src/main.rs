@@ -4,15 +4,58 @@ use color_eyre::eyre::{anyhow, Result};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use itertools::Itertools;
 use std::{
+    cmp::Ordering,
     collections::BTreeMap,
     env,
     fmt::Display,
-    fs,
+    fs, io,
     path::Path,
     process::{Command, Stdio},
+    str::FromStr,
 };
 mod shells;
 mod tui;
+
+#[derive(Default, Clone, Debug, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Status {
+    Archived,
+    Paused,
+    #[default]
+    Active,
+}
+
+impl TryFrom<String> for Status {
+    type Error = color_eyre::eyre::Error;
+    fn try_from(s: String) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "active" => Ok(Status::Active),
+            "paused" => Ok(Status::Paused),
+            "archived" => Ok(Status::Archived),
+            _ => Err(anyhow!("Invalid status")),
+        }
+    }
+}
+impl FromStr for Status {
+    type Err = color_eyre::eyre::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "active" => Ok(Status::Active),
+            "paused" => Ok(Status::Paused),
+            "archived" => Ok(Status::Archived),
+            _ => Err(anyhow!("Invalid status")),
+        }
+    }
+}
+
+impl Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::Active => write!(f, "Active"),
+            Status::Paused => write!(f, "Paused"),
+            Status::Archived => write!(f, "Archived"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -20,6 +63,7 @@ pub struct Project {
     pub name: String,
     pub date: NaiveDate,
     pub last_accessed: DateTime<Local>,
+    pub status: Status,
     args: Option<Args>,
 }
 
@@ -35,14 +79,24 @@ impl Project {
             name: name.into(),
             date,
             last_accessed,
+            status: Status::default(),
             args: None,
         }
     }
     pub fn get_path(&self) -> String {
-        format!("{}/{}", env::var("PROJECT_HOME").unwrap(), self.full_name())
+        format!(
+            "{}/{}/{}",
+            env::var("PROJECT_HOME").unwrap(),
+            self.status,
+            self.full_name()
+        )
     }
     pub fn with_args(mut self, args: &Args) -> Self {
         self.args = Some(args.to_owned());
+        self
+    }
+    pub fn with_status(mut self, status: Status) -> Self {
+        self.status = status;
         self
     }
     pub fn full_name(&self) -> String {
@@ -52,6 +106,12 @@ impl Project {
             self.name,
             self.date.format("%Y-%m-%d")
         )
+    }
+    pub fn set_status(&mut self, status: Status) -> io::Result<()> {
+        let old_path = self.get_path();
+        self.status = status;
+        let new_path = self.get_path();
+        fs::rename(old_path, new_path)
     }
 }
 
@@ -63,19 +123,23 @@ impl Display for Project {
                     return write!(f, "{}", self.get_path());
                 }
                 if args.id {
-                    write!(f, "{:02} ", self.id)?;
+                    write!(f, "{:3}\t", self.id)?;
                 }
                 if args.date {
-                    write!(f, "{} ", self.date)?;
+                    write!(f, "{}\t", self.date)?;
                 }
                 if args.accessed {
-                    write!(f, "({}) ", self.last_accessed)?;
+                    write!(f, "({})\t", self.last_accessed)?;
+                }
+                if args.status {
+                    write!(f, "({:^8})\t", self.status)?;
                 }
                 if args.full_name {
-                    write!(f, "{} ", self.full_name())?;
+                    write!(f, "{}\t", self.full_name())?;
                 } else if !args.no_name {
-                    write!(f, "{} ", self.name)?;
+                    write!(f, "{}\t", self.name)?;
                 }
+
                 Ok(())
             }
             None => write!(f, "{}", self.full_name()),
@@ -99,16 +163,43 @@ pub struct Args {
     no_name: bool,
     #[arg(short, long, help = "Print the time the projects were last accessed")]
     accessed: bool,
+    #[arg(short, long, help = "Print the status of the projects")]
+    status: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
+    #[command(about = "Get the status of a project")]
+    Status {
+        #[clap(help = "Decimal ID of the project")]
+        id: usize,
+    },
+    #[command(about = "Pause a project")]
+    Pause {
+        #[clap(help = "Decimal ID of the project")]
+        id: usize,
+    },
+    #[command(about = "Archive a project")]
+    Archive {
+        #[clap(help = "Decimal ID of the project")]
+        id: usize,
+    },
+    #[command(about = "Resume a project. Set status to active")]
+    Resume {
+        #[clap(help = "Decimal ID of the project")]
+        id: usize,
+    },
     #[command(about = "List all projects")]
     List {
-        #[arg(short, long, help = "Sort", default_value = "id")]
-        sort: Sort,
+        #[arg(
+            short,
+            long,
+            help = "What to sort by, can be multiple columns in order.",
+            default_value = "id"
+        )]
+        sort: Vec<Sort>,
         #[arg(short, long, help = "Reverse the sort")]
         reverse: bool,
         #[arg(
@@ -118,6 +209,11 @@ enum Commands {
             help = "Limit the number of results, 0 for no limit"
         )]
         limit: usize,
+        #[arg(
+            long,
+            help = "Filter by status. Can be `active`, `paused`, or `archived`"
+        )]
+        status: Vec<Status>,
     },
     #[command(about = "Create a new project")]
     New {
@@ -147,6 +243,11 @@ enum Commands {
     Search {
         #[clap(help = "Pattern to search for")]
         pattern: String,
+        #[arg(
+            long,
+            help = "Filter by status. Can be `active`, `paused`, or `archived`"
+        )]
+        status: Vec<Status>,
         #[arg(
             short,
             long,
@@ -195,6 +296,7 @@ enum Sort {
     #[clap(alias = "date")]
     Created,
     Accessed,
+    Status,
 }
 
 #[derive(Debug, Clone, Subcommand, Default)]
@@ -218,22 +320,28 @@ fn main() -> Result<()> {
         }
     };
 
-    let projects = read_files(&path_str, &args);
+    let mut projects = read_files(&path_str, &args);
     match args.command {
         Some(Commands::List {
             sort,
             reverse,
             limit,
+            status,
         }) => {
             projects
                 .values()
+                .filter(|p| status.is_empty() || status.contains(&p.status))
                 .sorted_by(|a, b| {
-                    let ordering = match sort {
-                        Sort::Id => a.id.cmp(&b.id),
-                        Sort::Name => a.name.cmp(&b.name),
-                        Sort::Created => a.date.cmp(&b.date),
-                        Sort::Accessed => a.last_accessed.cmp(&b.last_accessed),
-                    };
+                    let mut ordering = Ordering::Equal;
+                    for sort_order in sort.iter() {
+                        ordering = ordering.then(match sort_order {
+                            Sort::Id => a.id.cmp(&b.id),
+                            Sort::Name => a.name.cmp(&b.name),
+                            Sort::Created => a.date.cmp(&b.date),
+                            Sort::Accessed => a.last_accessed.cmp(&b.last_accessed),
+                            Sort::Status => a.status.cmp(&b.status),
+                        });
+                    }
                     if reverse {
                         ordering.reverse()
                     } else {
@@ -249,7 +357,10 @@ fn main() -> Result<()> {
             ref name,
             ref template,
         }) => {
-            let id = projects.last_key_value().unwrap().0 + 1;
+            let id = projects
+                .last_key_value()
+                .map(|kv| kv.0 + 1)
+                .unwrap_or_default();
             let date = Local::now().date_naive();
             let name = format_name(name).unwrap();
             let project = Project::new(id, name, date, Local::now()).with_args(&args);
@@ -278,12 +389,9 @@ fn main() -> Result<()> {
         Some(Commands::Rename { id, name }) => {
             let project = projects.get(&id).unwrap();
             let new_name = format_name(&name).unwrap();
-            let new_project = Project::new(id, new_name, project.date, Local::now());
-            Command::new("mv")
-                .arg(project.get_path())
-                .arg(new_project.get_path())
-                .output()
-                .unwrap();
+            let new_project =
+                Project::new(id, new_name, project.date, Local::now()).with_status(project.status);
+            fs::rename(project.get_path(), new_project.get_path())?;
             println!("Renamed project: {}", &new_project);
         }
         Some(Commands::Path { id }) => {
@@ -305,11 +413,18 @@ fn main() -> Result<()> {
                 .spawn()
                 .unwrap();
         }
-        Some(Commands::Search { pattern, limit }) => {
+        Some(Commands::Search {
+            pattern,
+            limit,
+            status,
+        }) => {
             let matcher = SkimMatcherV2::default();
             projects
                 .values()
                 .filter_map(|project| {
+                    if !(status.is_empty()) || status.contains(&project.status) {
+                        return None;
+                    }
                     let score = matcher.fuzzy_match(&project.to_string(), &pattern);
                     score.map(|score| (project, score))
                 })
@@ -335,9 +450,24 @@ fn main() -> Result<()> {
                 .output()
                 .unwrap();
         }
-        #[allow(unreachable_patterns)]
-        Some(c) => {
-            unimplemented!("{:?}", c);
+        Some(Commands::Status { id }) => {
+            let project = projects.get(&id).unwrap();
+            println!("{}", project.status);
+        }
+        Some(Commands::Archive { id }) => {
+            let project = projects.get_mut(&id).unwrap();
+            project.set_status(Status::Archived)?;
+            println!("{}", project);
+        }
+        Some(Commands::Pause { id }) => {
+            let project = projects.get_mut(&id).unwrap();
+            project.set_status(Status::Paused)?;
+            println!("{}", project);
+        }
+        Some(Commands::Resume { id }) => {
+            let project = projects.get_mut(&id).unwrap();
+            project.set_status(Status::Active)?;
+            println!("{}", project);
         }
         None => {
             tui::start(projects).unwrap();
@@ -360,48 +490,71 @@ fn format_name(name: &str) -> Result<String, String> {
 }
 
 fn read_files(path: impl Into<String>, args: &Args) -> BTreeMap<usize, Project> {
-    fs::read_dir(path.into())
-        .unwrap()
-        .filter(|project| {
-            project
-                .as_ref()
-                .unwrap()
-                .file_name()
-                .to_str()
-                .unwrap()
-                .starts_with('p')
+    let path_name = path.into();
+    fs::read_dir(&path_name)
+        .expect(format!("failed to read directory: {}", &path_name).as_str())
+        .filter_map(|res| {
+            res.ok()
+                .and_then(|dir| dir.file_name().into_string().ok().map(|s| (dir.path(), s)))
+                .and_then(|(path, status_dir)| {
+                    Status::try_from(status_dir)
+                        .ok()
+                        .map(|status| (path, status))
+                })
+                .map(|(path, status)| {
+                    fs::read_dir(path)
+                        .unwrap()
+                        .filter_map(|project| {
+                            if !project
+                                .as_ref()
+                                .unwrap()
+                                .file_name()
+                                .to_str()
+                                .unwrap()
+                                .starts_with('p')
+                            {
+                                return None;
+                            }
+                            let project = project.unwrap();
+                            let project_vec: Vec<String> = project
+                                .file_name()
+                                .to_str()
+                                .unwrap()
+                                .to_string()
+                                .split('-')
+                                .map(|s| s.to_string())
+                                .collect();
+                            let id = usize::from_str_radix(&project_vec[0][1..], 16).unwrap();
+                            let name = project_vec[1..project_vec.len() - 3].join("-");
+                            let date = NaiveDate::parse_from_str(
+                                project_vec[project_vec.len() - 3..=project_vec.len() - 1]
+                                    .join("-")
+                                    .as_str(),
+                                "%Y-%m-%d",
+                            )
+                            .expect("Could not parse date");
+                            let modified: DateTime<Local> = project
+                                .metadata()
+                                .unwrap()
+                                .accessed()
+                                .map(|time| time.into())
+                                .unwrap_or(
+                                    date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+                                        .and_local_timezone(Local)
+                                        .unwrap(),
+                                );
+                            Some((
+                                id,
+                                Project::new(id, name, date, modified)
+                                    .with_args(args)
+                                    .with_status(status),
+                            ))
+                        })
+                        .collect_vec()
+                })
         })
-        .map(|project| {
-            let project = project.unwrap();
-            let project_vec: Vec<String> = project
-                .file_name()
-                .to_str()
-                .unwrap()
-                .to_string()
-                .split('-')
-                .map(|s| s.to_string())
-                .collect();
-            let id = usize::from_str_radix(&project_vec[0][1..], 16).unwrap();
-            let name = project_vec[1..project_vec.len() - 3].join("-");
-            let date = NaiveDate::parse_from_str(
-                project_vec[project_vec.len() - 3..=project_vec.len() - 1]
-                    .join("-")
-                    .as_str(),
-                "%Y-%m-%d",
-            )
-            .expect("Could not parse date");
-            let modified: DateTime<Local> = project
-                .metadata()
-                .unwrap()
-                .accessed()
-                .map(|time| time.into())
-                .unwrap_or(
-                    date.and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
-                        .and_local_timezone(Local)
-                        .unwrap(),
-                );
-            (id, Project::new(id, name, date, modified).with_args(args))
-        })
+        .concat()
+        .into_iter()
         .collect()
 }
 

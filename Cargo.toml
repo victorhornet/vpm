@@ -1,6 +1,6 @@
 [package]
 name = "vector-project-manager"
-version = "0.1.6"
+version = "0.2.0"
 authors = ["Victor Hornet"]
 license = "MIT"
 edition = "2021"
